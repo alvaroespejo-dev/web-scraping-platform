@@ -1,0 +1,95 @@
+name: Deploy API (Azure App Service)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "packages/shared/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Used only by the smoke test below.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # The build runs here, not on App Service (the free tier has very little CPU).
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build -w @scraping/shared
+          npm run build -w @scraping/api
+
+      - name: Prune dev dependencies
+        run: npm prune --omit=dev
+
+      # npm workspaces link local packages into node_modules with symlinks, which do not
+      # survive the zip deploy. Replace the one the API needs with a real copy and drop the rest.
+      - name: Replace workspace symlinks
+        run: |
+          rm -rf node_modules/@scraping
+          mkdir -p node_modules/@scraping/shared
+          cp -r packages/shared/dist packages/shared/package.json node_modules/@scraping/shared/
+
+      - name: Create deployment package
+        run: |
+          paths="package.json node_modules apps/api/package.json apps/api/dist apps/api/prisma apps/api/scripts"
+          if [ -d apps/api/node_modules ]; then paths="$paths apps/api/node_modules"; fi
+          # Exit code 18 only means some dangling links were skipped; the smoke test validates the result.
+          zip -r -q release.zip $paths || { rc=$?; [ "$rc" -eq 18 ] || exit "$rc"; }
+          ls -lh release.zip
+
+      # Start the exact package that will be deployed. If it cannot start and log in,
+      # the job fails here and the running site is left untouched.
+      - name: Smoke test the package
+        env:
+          PORT: "8080"
+          DATABASE_PROVIDER: sqlite
+          DATABASE_URL: file:/tmp/smoke-data/dev.db
+          REDIS_HOST: localhost
+          REDIS_PORT: "6379"
+          ENABLE_WORKER: "true"
+          JWT_ACCESS_SECRET: smoke-test-access
+          JWT_REFRESH_SECRET: smoke-test-refresh
+          ADMIN_EMAIL: smoke@example.com
+          ADMIN_PASSWORD: smoke-test-password
+        run: |
+          mkdir /tmp/smoke && unzip -q release.zip -d /tmp/smoke
+          cd /tmp/smoke
+          npm start > /tmp/smoke.log 2>&1 &
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/docs || true)
+            if [ "$code" = "200" ]; then break; fi
+            sleep 2
+          done
+          login=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
+            -d '{"email":"smoke@example.com","password":"smoke-test-password"}' http://localhost:8080/auth/login || true)
+          echo "docs=$code login=$login"
+          if [ "$code" != "200" ] || [ "$login" != "200" ]; then
+            echo "--- startup log:"; cat /tmp/smoke.log
+            exit 1
+          fi
+
+      - name: Deploy to App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: WebScrapingApi
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: release.zip

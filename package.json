@@ -1,0 +1,21 @@
+{
+  "name": "aespejo-scraping",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "start": "node apps/api/scripts/azure-start.js",
+    "build": "npm run build -w @scraping/shared && npm run build -w @scraping/api && npm run build -w @scraping/web",
+    "db:up": "docker compose up -d redis",
+    "db:migrate": "npm run db:push -w @scraping/api",
+    "db:seed": "npm run seed -w @scraping/api",
+    "dev:api": "npm run start:dev -w @scraping/api",
+    "dev:worker": "npm run start:worker:dev -w @scraping/api",
+    "dev:web": "npm run dev -w @scraping/web",
+    "test": "npm run test -w @scraping/api && npm run test:e2e -w @scraping/api",
+    "db:seed-cases": "npm run seed:cases -w @scraping/api"
+  }
+}

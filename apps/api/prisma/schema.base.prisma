@@ -1,0 +1,113 @@
+// Base schema. `prisma/schema.prisma` is generated from this file by scripts/use-database.js
+// based on DATABASE_PROVIDER (postgresql | sqlite). Do not edit schema.prisma by hand.
+//
+// Enum-like fields are String: SQLite does not support Prisma enums.
+// Valid values are checked in the application with the Zod schemas from @scraping/shared.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "__DATABASE_PROVIDER__"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         String   @default("USER") // ADMIN | USER
+  refreshHash  String?
+  createdAt    DateTime @default(now())
+  sites        Site[]
+}
+
+model Site {
+  id              String   @id @default(cuid())
+  ownerId         String
+  owner           User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name            String
+  baseUrl         String
+  scraperType     String   @default("STATIC")  // STATIC | DYNAMIC
+  itemSelector    String
+  paginationType  String   @default("NONE")    // NONE | NEXT_SELECTOR | URL_PATTERN
+  nextSelector    String?
+  urlTemplate     String?
+  maxPages        Int      @default(1)
+  waitForSelector String?
+  requestDelayMs  Int      @default(1000)
+  cron            String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  fields          FieldSelector[]
+  executions      Execution[]
+  items           ScrapedItem[]
+
+  @@index([ownerId])
+}
+
+model FieldSelector {
+  id        String @id @default(cuid())
+  siteId    String
+  site      Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  name      String
+  selector  String
+  attribute String @default("text")
+  type      String @default("STRING") // STRING | NUMBER | PRICE | URL | DATE
+  required  Boolean @default(false)
+  position  Int    @default(0)
+
+  @@unique([siteId, name])
+}
+
+model Execution {
+  id             String   @id @default(cuid())
+  siteId         String
+  site           Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  trigger        String   // MANUAL | SCHEDULED
+  status         String   @default("QUEUED") // QUEUED | RUNNING | SUCCESS | PARTIAL | FAILED | CANCELLED
+  createdAt      DateTime @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  durationMs     Int?
+  pagesProcessed Int      @default(0)
+  itemsExtracted Int      @default(0)
+  itemsInvalid   Int      @default(0)
+  errorMessage   String?
+  bullJobId      String?
+  logs           ExecutionLog[]
+  items          ScrapedItem[]
+
+  @@index([siteId, createdAt])
+  @@index([status])
+}
+
+model ExecutionLog {
+  id          String    @id @default(cuid())
+  executionId String
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  level       String    // INFO | WARN | ERROR
+  pageUrl     String?
+  message     String
+  stack       String?
+  createdAt   DateTime  @default(now())
+
+  @@index([executionId, createdAt])
+}
+
+model ScrapedItem {
+  id          String    @id @default(cuid())
+  executionId String
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  siteId      String
+  site        Site      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  pageUrl     String
+  data        Json
+  contentHash String
+  createdAt   DateTime  @default(now())
+
+  @@index([executionId])
+  @@index([siteId, createdAt])
+}
